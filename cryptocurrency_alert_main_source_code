@@ -2,115 +2,118 @@ import conf
 import time
 import json
 import requests
-from boltiot import Bolt, Sms, Email  # Assuming Email class is part of boltiot module
+from boltiot import Bolt, Sms
 
-# Initialize Bolt, Sms, and Email classes with configuration values
+# Initializing Bolt IoT device and SMS services
 bolt = Bolt(conf.BOLT_API, conf.DEVICE_ID)
 sms = Sms(conf.SSID, conf.AUTH_TOKEN, conf.TO_NUMBER, conf.FROM_NUMBER)
-email = Email(conf.MAILGUN_API_KEY, conf.DOMAIN_NAME, conf.SENDER_EMAIL, conf.RECIPIENT_EMAIL)
 
-def get_currency():
-    """
-    Get the currency choice from the user and validate it.
-    """
-    valid_currencies = ["INR", "USD", "JPY", "EUR"]
-    print("Select any one of the following currency input: INR, USD, JPY, EUR")
+# Supported cryptocurrency symbols and names
+currency_symbols = {
+    "BTC": "Bitcoin",
+    "ETH": "Ethereum",
+    "XRP": "Ripple",
+    "LTC": "Litecoin"
+}
+
+# Function to fetch real-time cryptocurrency prices
+def price_check(crypto_symbol):
+    url = f"https://min-api.cryptocompare.com/data/price?fsym={crypto_symbol.upper()}&tsyms=INR,USD,JPY,EUR"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Check for request errors
+        prices = response.json()
+        return prices
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching price data: {e}")
+        return {}
+
+# Function to let the user select the cryptocurrency they want to monitor
+def select_crypto():
+    print("Select a cryptocurrency to monitor:")
+    for symbol, name in currency_symbols.items():
+        print(f"{symbol} - {name}")
     while True:
-        currency = input("Enter the currency code (e.g., INR, USD): ").upper()
-        if currency in valid_currencies:
-            return currency
+        crypto = input("Enter the symbol (e.g., BTC, ETH, XRP, LTC): ").upper()
+        if crypto in currency_symbols:
+            return crypto
         else:
-            print("Invalid currency! Please choose from INR, USD, JPY, EUR.")
+            print("Invalid symbol. Please choose from the available options.")
 
-def get_sell_price():
-    """
-    Get the sell price from the user, ensuring it's a valid float.
-    """
+# Function to get the desired sell price from the user
+def get_sell_price(currency):
     while True:
         try:
-            sell_price = float(input("Enter your target sell price for Bitcoin: "))
+            sell_price = float(input(f"Enter your target sell price in {currency}: "))
             if sell_price > 0:
                 return sell_price
             else:
-                print("Sell price should be greater than zero.")
+                print("Price must be greater than zero.")
         except ValueError:
-            print("Invalid input! Please enter a numerical value.")
+            print("Invalid input. Please enter a valid price.")
 
-def price_check(currency):
-    """
-    Fetch the current price of Bitcoin in the specified currency.
-    """
-    url = f"https://min-api.cryptocompare.com/data/price?fsym=BTC&tsyms={currency}"
-    try:
-        response = requests.get(url)
-        data = json.loads(response.text)
-        return data.get(currency, None)
-    except requests.exceptions.RequestException as e:
-        print("Error fetching price data:", e)
-        return None
-
-def send_alert(market_price, sell_price, currency):
-    """
-    Send an SMS and email alert based on the market price relative to the sell price.
-    """
-    try:
-        # Determine alert message based on price comparison
-        if market_price < sell_price:
-            message = f"The Bitcoin price is at {market_price} {currency}, below your target sell price of {sell_price}."
-            response_sms = sms.send_sms(message)
-            response_email = email.send_email("Investment Alert", message)
-            print("Market price is below target sell price. Alert sent.")
-            print("SMS Status:", response_sms.status)
-            print("Email Status:", response_email)
-        elif market_price > sell_price:
-            message = f"Bitcoin has exceeded your target price! Current price: {market_price} {currency}."
-            response_sms = sms.send_sms(message)
-            response_email = email.send_email("Price Alert", message)
-            print("Market price is above target sell price. Alert sent.")
-            print("SMS Status:", response_sms.status)
-            print("Email Status:", response_email)
-    except Exception as e:
-        print("Error occurred while sending alert:", e)
-
-# Main Execution Logic
-currency = get_currency()  # Get and validate user currency input
-sell_price = get_sell_price()  # Get and validate sell price
-
-print("\nMonitoring Bitcoin price...\n")
-log_file = "price_log.txt"
-
-while True:
-    # Check the current Bitcoin price
-    market_price = price_check(currency)
+# Main alert function to monitor prices and notify the user
+def monitor_price():
+    crypto_symbol = select_crypto()
+    print("Select the currency for setting your sell price:")
+    for currency in ['INR', 'USD', 'JPY', 'EUR']:
+        print(currency)
+    sell_currency = input("Enter the currency code (e.g., INR, USD): ").upper()
+    sell_price = get_sell_price(sell_currency)
     
-    if market_price:
-        print(f"Market price of Bitcoin in {currency}: {market_price}")
-        print(f"Your target sell price: {sell_price}")
+    print("\nMonitoring started for {} in {}...".format(currency_symbols[crypto_symbol], sell_currency))
+    log_file = "crypto_price_log.txt"  # Log file for recording price history
+
+    while True:
+        prices = price_check(crypto_symbol)
+        if not prices:
+            print("Failed to retrieve prices. Retrying...")
+            time.sleep(10)  # Wait and retry in case of API error
+            continue
         
-        # Log price to a file with timestamp
+        crypto_name = currency_symbols.get(crypto_symbol, "Unknown")
+        invest_price = prices.get(sell_currency, 0.0)
+
+        # Log the current price to file
         with open(log_file, "a") as log:
-            log.write(f"{time.ctime()}: Bitcoin price in {currency} is {market_price}\n")
+            log.write(f"{time.ctime()}: {crypto_name} price in {sell_currency} is {invest_price}\n")
         
-        # Send alert if conditions are met
-        send_alert(market_price, sell_price, currency)
-        
-        # Control devices based on market price
-        try:
-            if market_price < sell_price:
-                bolt.digitalWrite("0", "HIGH")  # Turn on LED or other indicator for "buy"
-                bolt.digitalWrite("1", "LOW")  # Turn off "sell" indicator
-            else:
-                bolt.digitalWrite("0", "LOW")  # Turn off "buy" indicator
-                bolt.digitalWrite("1", "HIGH")  # Turn on LED for "sell" or caution
-            
-            time.sleep(5)
-            bolt.digitalWrite("0", "LOW")  # Reset indicators after a delay
-            bolt.digitalWrite("1", "LOW")
-        except Exception as e:
-            print("Error controlling Bolt device:", e)
-    
-    else:
-        print("Failed to fetch the current market price. Retrying...")
+        print(f"\nCurrent prices for {crypto_name} ({crypto_symbol}):")
+        for currency, value in prices.items():
+            print(f"{currency}: {value}")
 
-    # Pause before next check to avoid excessive requests
-    time.sleep(30)
+        # Alerting conditions based on market price
+        if invest_price < sell_price:
+            alert_message = f"The {crypto_name} ({crypto_symbol}) is at {invest_price} {sell_currency}, below your target of {sell_price}. Consider investing!"
+            send_alert(alert_message, led_pin="0")
+        elif invest_price > sell_price:
+            alert_message = f"The {crypto_name} ({crypto_symbol}) is at {invest_price} {sell_currency}, above your target of {sell_price}. You might want to be cautious."
+            send_alert(alert_message, led_pin="1")
+        else:
+            print(f"The {crypto_name} ({crypto_symbol}) is at your specified selling price of {sell_price} {sell_currency}. Consider selling.")
+
+        time.sleep(5)
+        reset_leds()
+        time.sleep(30)  # Delay before checking price again
+
+# Function to send SMS alerts and activate LED indicators
+def send_alert(message, led_pin):
+    try:
+        bolt.digitalWrite(led_pin, "HIGH")  # Turn on specified LED pin
+        response = sms.send_sms(message)
+        print(f"Status of SMS at Twilio: {response.status}")
+        print(message)
+    except Exception as e:
+        print("Error sending alert:", e)
+
+# Function to turn off LEDs after each alert cycle
+def reset_leds():
+    try:
+        bolt.digitalWrite("0", "LOW")
+        bolt.digitalWrite("1", "LOW")
+    except Exception as e:
+        print("Error resetting LEDs:", e)
+
+# Start monitoring process
+monitor_price()
+
